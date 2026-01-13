@@ -16,6 +16,7 @@ export const useMeshNetwork = () => {
   const [networkStatus, setNetworkStatus] = useState<any>(null);
   
   const initializationRef = useRef(false);
+  const messagesLoadedRef = useRef(false);
 
   // Initialize the unified mesh network
   useEffect(() => {
@@ -26,18 +27,40 @@ export const useMeshNetwork = () => {
       try {
         console.log('[useMeshNetwork] Initializing unified mesh...');
         
+        // Initialize offline storage first
+        await offlineStorage.initialize();
+        
         // Initialize the unified mesh service
         const { deviceId, deviceName } = await unifiedMesh.initialize();
         
         setLocalDeviceId(deviceId);
         setLocalDeviceName(deviceName);
 
-        // Load cached data
-        const cachedMessages = await offlineStorage.getAllMessages(deviceId);
-        setMessages(cachedMessages);
+        // Load ALL cached messages from IndexedDB immediately (works offline!)
+        if (!messagesLoadedRef.current) {
+          const cachedMessages = await offlineStorage.getAllMessages(deviceId);
+          console.log('[useMeshNetwork] Loaded', cachedMessages.length, 'cached messages');
+          setMessages(cachedMessages);
+          messagesLoadedRef.current = true;
+        }
         
-        // Get initial devices
-        setDevices(unifiedMesh.getDevices());
+        // Load cached devices
+        const cachedDevices = await offlineStorage.getAllDevices();
+        console.log('[useMeshNetwork] Loaded', cachedDevices.length, 'cached devices');
+        if (cachedDevices.length > 0) {
+          setDevices(cachedDevices.filter(d => !d.isSelf));
+        }
+        
+        // Get current devices from mesh service
+        const currentDevices = unifiedMesh.getDevices();
+        if (currentDevices.length > 0) {
+          setDevices(prev => {
+            const merged = new Map(prev.map(d => [d.id, d]));
+            currentDevices.forEach(d => merged.set(d.id, d));
+            return Array.from(merged.values());
+          });
+        }
+        
         setIsOnline(unifiedMesh.getIsOnline());
 
         // Setup event handlers
@@ -80,7 +103,12 @@ export const useMeshNetwork = () => {
         unifiedMesh.setEventHandler('onMessageReceived', (message) => {
           console.log('[useMeshNetwork] Message received:', message.id);
           setMessages(prev => {
-            if (prev.find(m => m.id === message.id)) return prev;
+            // Check for duplicates
+            if (prev.find(m => m.id === message.id)) {
+              console.log('[useMeshNetwork] Duplicate message ignored:', message.id);
+              return prev;
+            }
+            console.log('[useMeshNetwork] Adding new message to state');
             return [...prev, message];
           });
         });

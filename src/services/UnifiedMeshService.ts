@@ -10,6 +10,7 @@ import { offlineStorage } from './OfflineStorageService';
 import { smartTransport } from './SmartTransportSelector';
 import { Preferences } from '@capacitor/preferences';
 import { Capacitor } from '@capacitor/core';
+import { detectDeviceInfo, getFriendlyDeviceName } from '@/utils/deviceDetection';
 
 interface UnifiedMeshEvents {
   onDeviceDiscovered: (device: MeshDevice) => void;
@@ -35,9 +36,9 @@ const generateDeviceId = () => Math.random().toString(36).substring(2, 10).toUpp
  * UnifiedMeshService - The single entry point for all mesh networking
  * 
  * Transport Priority:
- * 1. Local (BroadcastChannel) - Same origin, instant
+ * 1. Local (BroadcastChannel) - Same origin, instant, ALWAYS WORKS OFFLINE
  * 2. WebRTC - P2P over internet, low latency
- * 3. Global Relay (Supabase) - Worldwide, reliable
+ * 3. Global Relay (Supabase) - Worldwide, reliable (needs internet)
  * 4. Offline Queue - Store and forward when all fail
  */
 class UnifiedMeshServiceImpl {
@@ -113,8 +114,28 @@ class UnifiedMeshServiceImpl {
       
       if (storedIdentity && storedIdentity.deviceId) {
         this.localDeviceId = storedIdentity.deviceId;
-        this.localDeviceName = storedIdentity.deviceName;
-        console.log('[UnifiedMesh] Loaded identity from IndexedDB:', this.localDeviceId);
+        
+        // Check if we have a real device name or just a generic one
+        const storedName = storedIdentity.deviceName || '';
+        if (storedName.startsWith('MeshUser-') || storedName.startsWith('Device-') || !storedName) {
+          // Detect actual device name
+          const deviceInfo = detectDeviceInfo();
+          this.localDeviceName = deviceInfo.name;
+          
+          // Update stored identity with the real device name
+          await offlineStorage.setDeviceIdentity({
+            deviceId: this.localDeviceId,
+            deviceName: this.localDeviceName,
+            createdAt: storedIdentity.createdAt,
+            deviceType: deviceInfo.type,
+            deviceBrand: deviceInfo.brand,
+            deviceOS: deviceInfo.os
+          });
+        } else {
+          this.localDeviceName = storedName;
+        }
+        
+        console.log('[UnifiedMesh] Loaded identity from IndexedDB:', this.localDeviceId, this.localDeviceName);
       } else {
         // Try Capacitor Preferences as fallback (for native apps)
         try {
@@ -123,23 +144,35 @@ class UnifiedMeshServiceImpl {
           
           if (storedId) {
             this.localDeviceId = storedId;
-            this.localDeviceName = storedName || `MeshUser-${storedId.slice(0, 4)}`;
+            // Detect real device name
+            const deviceInfo = detectDeviceInfo();
+            this.localDeviceName = storedName && !storedName.startsWith('MeshUser-') 
+              ? storedName 
+              : deviceInfo.name;
           } else {
-            // Generate new identity
+            // Generate new identity with actual device name
             this.localDeviceId = generateDeviceId();
-            this.localDeviceName = `MeshUser-${this.localDeviceId.slice(0, 4)}`;
+            const deviceInfo = detectDeviceInfo();
+            this.localDeviceName = deviceInfo.name;
           }
         } catch (e) {
           // Generate new identity if all storage fails
           this.localDeviceId = generateDeviceId();
-          this.localDeviceName = `MeshUser-${this.localDeviceId.slice(0, 4)}`;
+          const deviceInfo = detectDeviceInfo();
+          this.localDeviceName = deviceInfo.name;
         }
+        
+        // Get device info for storage
+        const deviceInfo = detectDeviceInfo();
         
         // Persist to IndexedDB for future sessions
         await offlineStorage.setDeviceIdentity({
           deviceId: this.localDeviceId,
           deviceName: this.localDeviceName,
-          createdAt: Date.now()
+          createdAt: Date.now(),
+          deviceType: deviceInfo.type,
+          deviceBrand: deviceInfo.brand,
+          deviceOS: deviceInfo.os
         });
         
         // Also try to persist to Capacitor Preferences
@@ -153,7 +186,8 @@ class UnifiedMeshServiceImpl {
     } catch (e) {
       console.error('[UnifiedMesh] Error loading identity:', e);
       this.localDeviceId = generateDeviceId();
-      this.localDeviceName = `MeshUser-${this.localDeviceId.slice(0, 4)}`;
+      const deviceInfo = detectDeviceInfo();
+      this.localDeviceName = deviceInfo.name;
     }
     
     console.log('[UnifiedMesh] Device identity:', this.localDeviceId, this.localDeviceName);

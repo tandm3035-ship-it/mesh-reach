@@ -234,9 +234,15 @@ class GlobalMeshRelayService {
       const presence = presences[0];
       if (!presence) return;
 
+      // Use actual device name, filter out generic names
+      let deviceName = presence.device_name || '';
+      if (!deviceName || deviceName.startsWith('MeshUser-') || deviceName === 'My Device') {
+        deviceName = `Device-${key.slice(0, 4)}`;
+      }
+
       const device: MeshDevice = {
         id: presence.device_id,
-        name: presence.device_name || `Device-${key.slice(0, 4)}`,
+        name: deviceName,
         signalStrength: 90,
         distance: 50,
         angle: Math.random() * 360,
@@ -262,9 +268,15 @@ class GlobalMeshRelayService {
     const presence = presences[0];
     if (!presence) return;
 
+    // Use actual device name, filter out generic names
+    let deviceName = presence.device_name || '';
+    if (!deviceName || deviceName.startsWith('MeshUser-') || deviceName === 'My Device') {
+      deviceName = `Device-${key.slice(0, 4)}`;
+    }
+
     const device: MeshDevice = {
       id: presence.device_id || key,
-      name: presence.device_name || `Device-${key.slice(0, 4)}`,
+      name: deviceName,
       signalStrength: 90,
       distance: 50,
       angle: Math.random() * 360,
@@ -283,7 +295,7 @@ class GlobalMeshRelayService {
     offlineStorage.saveDevice(device);
     
     if (isNew) {
-      console.log('[GlobalRelay] New device joined:', device.name);
+      console.log('[GlobalRelay] New device joined:', device.name, device.id);
       this.events.onDeviceDiscovered?.(device);
     } else {
       this.events.onDeviceUpdated?.(device);
@@ -507,9 +519,15 @@ class GlobalMeshRelayService {
     data?.forEach(d => {
       if (d.device_id === this.localDeviceId) return;
 
+      // Use the actual device name from database, filter out generic names
+      let deviceName = d.device_name || '';
+      if (!deviceName || deviceName.startsWith('MeshUser-') || deviceName === 'My Device') {
+        deviceName = `Device-${d.device_id.slice(0, 4)}`;
+      }
+
       const device: MeshDevice = {
         id: d.device_id,
-        name: d.device_name,
+        name: deviceName,
         signalStrength: 80,
         distance: 100,
         angle: Math.random() * 360,
