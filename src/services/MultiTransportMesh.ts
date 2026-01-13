@@ -4,8 +4,21 @@
 import { MeshDevice, MeshMessage, ConnectionType } from '@/types/mesh';
 import { MeshPacket, createPacket, decodePacket, encodePacket, verifyPacket, shouldRelay, prepareForRelay, generateDeviceId, MESH_NAME_PREFIX } from './MeshProtocol';
 import { Preferences } from '@capacitor/preferences';
-import { LocalNotifications } from '@capacitor/local-notifications';
 import { Capacitor } from '@capacitor/core';
+
+// Dynamic import for local notifications (only available on native)
+let LocalNotifications: any = null;
+const loadLocalNotifications = async () => {
+  if (Capacitor.isNativePlatform() && !LocalNotifications) {
+    try {
+      const module = await import('@capacitor/local-notifications');
+      LocalNotifications = module.LocalNotifications;
+    } catch (e) {
+      console.log('Local notifications not available');
+    }
+  }
+  return LocalNotifications;
+};
 
 export type TransportType = 'bluetooth' | 'wifi-direct' | 'webrtc' | 'network' | 'ultrasonic' | 'nfc';
 
@@ -130,8 +143,11 @@ export class MultiTransportMeshService {
       // Request notification permissions
       if (Capacitor.isNativePlatform()) {
         try {
-          const permission = await LocalNotifications.requestPermissions();
-          console.log('Notification permission:', permission);
+          const notifications = await loadLocalNotifications();
+          if (notifications) {
+            const permission = await notifications.requestPermissions();
+            console.log('Notification permission:', permission);
+          }
         } catch (e) {
           console.log('Notifications not available:', e);
         }
@@ -299,7 +315,10 @@ export class MultiTransportMeshService {
     this.deliveredNotificationIds.add(message.id);
 
     try {
-      await LocalNotifications.schedule({
+      const notifications = await loadLocalNotifications();
+      if (!notifications) return;
+
+      await notifications.schedule({
         notifications: [
           {
             title: `Message from ${message.senderId.slice(0, 6)}...`,
