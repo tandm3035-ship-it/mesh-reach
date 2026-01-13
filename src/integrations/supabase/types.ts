@@ -14,7 +14,104 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      mesh_devices: {
+        Row: {
+          created_at: string | null
+          device_id: string
+          device_name: string
+          device_type: string | null
+          id: string
+          is_online: boolean | null
+          last_seen: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          device_id: string
+          device_name: string
+          device_type?: string | null
+          id?: string
+          is_online?: boolean | null
+          last_seen?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          device_id?: string
+          device_name?: string
+          device_type?: string | null
+          id?: string
+          is_online?: boolean | null
+          last_seen?: string | null
+        }
+        Relationships: []
+      }
+      mesh_messages: {
+        Row: {
+          content: string
+          created_at: string | null
+          hops: string[] | null
+          id: string
+          message_id: string
+          receiver_id: string
+          sender_id: string
+          status: string | null
+        }
+        Insert: {
+          content: string
+          created_at?: string | null
+          hops?: string[] | null
+          id?: string
+          message_id: string
+          receiver_id: string
+          sender_id: string
+          status?: string | null
+        }
+        Update: {
+          content?: string
+          created_at?: string | null
+          hops?: string[] | null
+          id?: string
+          message_id?: string
+          receiver_id?: string
+          sender_id?: string
+          status?: string | null
+        }
+        Relationships: []
+      }
+      mesh_presence: {
+        Row: {
+          device_id: string
+          id: string
+          is_online: boolean | null
+          is_typing: boolean | null
+          last_heartbeat: string | null
+          typing_to: string | null
+        }
+        Insert: {
+          device_id: string
+          id?: string
+          is_online?: boolean | null
+          is_typing?: boolean | null
+          last_heartbeat?: string | null
+          typing_to?: string | null
+        }
+        Update: {
+          device_id?: string
+          id?: string
+          is_online?: boolean | null
+          is_typing?: boolean | null
+          last_heartbeat?: string | null
+          typing_to?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "mesh_presence_device_id_fkey"
+            columns: ["device_id"]
+            isOneToOne: true
+            referencedRelation: "mesh_devices"
+            referencedColumns: ["device_id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
