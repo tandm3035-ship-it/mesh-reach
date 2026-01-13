@@ -32,6 +32,7 @@ interface ConversationListProps {
   isScanning: boolean;
 }
 
+// Device type icon mapping with proper styling
 const DeviceIcon = ({ type, className }: { type: MeshDevice['type']; className?: string }) => {
   const iconClass = cn("w-5 h-5", className);
   switch (type) {
@@ -39,8 +40,40 @@ const DeviceIcon = ({ type, className }: { type: MeshDevice['type']; className?:
     case 'tablet': return <Tablet className={iconClass} />;
     case 'laptop': return <Laptop className={iconClass} />;
     case 'desktop': return <Monitor className={iconClass} />;
-    default: return <HelpCircle className={iconClass} />;
+    default: return <Smartphone className={iconClass} />;
   }
+};
+
+// Extract brand/model name from device name for display
+const getDisplayName = (device: MeshDevice): { brand: string; model: string } => {
+  const name = device.name || 'Unknown Device';
+  
+  // Common brand patterns
+  const brands = ['Samsung', 'Apple', 'Google', 'Xiaomi', 'OnePlus', 'Huawei', 'OPPO', 'Vivo', 'Realme', 'Motorola', 'Nokia', 'LG', 'Sony', 'Asus', 'Lenovo', 'HP', 'Dell', 'Acer', 'Microsoft', 'Chrome'];
+  
+  for (const brand of brands) {
+    if (name.toLowerCase().includes(brand.toLowerCase())) {
+      const model = name.replace(new RegExp(brand, 'i'), '').trim();
+      return { brand, model: model || name };
+    }
+  }
+  
+  // Check for Mac/iPhone/iPad
+  if (name.includes('Mac') || name.includes('iPhone') || name.includes('iPad')) {
+    return { brand: 'Apple', model: name };
+  }
+  
+  // Check for Galaxy
+  if (name.includes('Galaxy')) {
+    return { brand: 'Samsung', model: name };
+  }
+  
+  // Check for Pixel
+  if (name.includes('Pixel')) {
+    return { brand: 'Google', model: name };
+  }
+  
+  return { brand: '', model: name };
 };
 
 const getLastMessageStatus = (status: MeshMessage['status']) => {
@@ -177,76 +210,101 @@ export const ConversationList = ({
           </div>
         ) : (
           <div className="divide-y divide-border">
-            {filteredConversations.map(({ device, lastMessage, unreadCount }) => (
-              <button
-                key={device.id}
-                onClick={() => onSelectDevice(device)}
-                className={cn(
-                  "w-full flex items-center gap-3 p-4 hover:bg-secondary/50 transition-colors text-left",
-                  selectedDeviceId === device.id && "bg-secondary"
-                )}
-              >
-                {/* Avatar */}
-                <div className="relative shrink-0">
-                  <div className={cn(
-                    "w-12 h-12 rounded-full flex items-center justify-center text-lg font-bold",
-                    device.isSelf 
-                      ? "bg-gradient-to-br from-accent to-primary text-primary-foreground"
-                      : "bg-gradient-to-br from-primary to-accent/70 text-primary-foreground"
-                  )}>
-                    {device.isSelf ? '📱' : device.name.charAt(0).toUpperCase()}
+            {filteredConversations.map(({ device, lastMessage, unreadCount }) => {
+              const displayInfo = getDisplayName(device);
+              
+              return (
+                <button
+                  key={device.id}
+                  onClick={() => onSelectDevice(device)}
+                  className={cn(
+                    "w-full flex items-center gap-3 p-4 hover:bg-secondary/50 transition-colors text-left",
+                    selectedDeviceId === device.id && "bg-secondary"
+                  )}
+                >
+                  {/* Device Icon Avatar */}
+                  <div className="relative shrink-0">
+                    <div className={cn(
+                      "w-12 h-12 rounded-full flex items-center justify-center",
+                      device.isSelf 
+                        ? "bg-gradient-to-br from-accent to-primary text-primary-foreground"
+                        : device.isOnline || device.isConnected
+                          ? "bg-gradient-to-br from-node-active/20 to-primary/20 text-primary border-2 border-node-active/50"
+                          : "bg-gradient-to-br from-muted to-secondary text-muted-foreground border-2 border-border"
+                    )}>
+                      <DeviceIcon type={device.type} className="w-6 h-6" />
+                    </div>
+                    <div className={cn(
+                      "absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-2 border-card",
+                      device.isOnline || device.isConnected || device.isSelf
+                        ? "bg-node-active" 
+                        : "bg-muted-foreground"
+                    )} />
                   </div>
-                  <div className={cn(
-                    "absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-2 border-card",
-                    device.isOnline || device.isConnected || device.isSelf
-                      ? "bg-node-active" 
-                      : "bg-muted-foreground"
-                  )} />
-                </div>
 
-                {/* Content */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-display font-bold truncate">
-                      {device.isSelf ? `${device.name} (You)` : device.name}
-                    </span>
-                    {lastMessage && (
-                      <span className="text-xs text-muted-foreground shrink-0">
-                        {formatDistanceToNow(new Date(lastMessage.timestamp), { addSuffix: false })}
-                      </span>
-                    )}
-                  </div>
-                  
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1 min-w-0">
-                      {lastMessage && lastMessage.senderId === localDeviceId && (
-                        getLastMessageStatus(lastMessage.status)
-                      )}
-                      <p className="text-sm text-muted-foreground truncate">
-                        {device.isTyping ? (
-                          <span className="text-primary italic">typing...</span>
-                        ) : lastMessage ? (
-                          lastMessage.content
-                        ) : device.isSelf ? (
-                          'Message yourself'
-                        ) : (
-                          <span className="flex items-center gap-1">
-                            <DeviceIcon type={device.type} className="w-3 h-3" />
-                            {device.connectionType || 'Nearby'}
+                  {/* Content */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex flex-col min-w-0">
+                        <span className="font-bold text-base tracking-tight truncate">
+                          {device.isSelf ? `${displayInfo.model} (You)` : displayInfo.model}
+                        </span>
+                        {displayInfo.brand && !device.isSelf && (
+                          <span className="text-xs text-primary font-medium">
+                            {displayInfo.brand} • {device.type}
                           </span>
                         )}
-                      </p>
+                      </div>
+                      {lastMessage && (
+                        <span className="text-xs text-muted-foreground shrink-0 ml-2">
+                          {formatDistanceToNow(new Date(lastMessage.timestamp), { addSuffix: false })}
+                        </span>
+                      )}
                     </div>
                     
-                    {unreadCount > 0 && (
-                      <Badge className="ml-2 bg-primary text-primary-foreground shrink-0">
-                        {unreadCount}
-                      </Badge>
-                    )}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1 min-w-0">
+                        {lastMessage && lastMessage.senderId === localDeviceId && (
+                          getLastMessageStatus(lastMessage.status)
+                        )}
+                        <p className="text-sm text-muted-foreground truncate">
+                          {device.isTyping ? (
+                            <span className="text-primary italic">typing...</span>
+                          ) : lastMessage ? (
+                            lastMessage.content
+                          ) : device.isSelf ? (
+                            'Message yourself'
+                          ) : (
+                            <span className="flex items-center gap-1 text-xs">
+                              <span className={cn(
+                                "px-1.5 py-0.5 rounded text-[10px] font-medium",
+                                device.connectionType === 'bluetooth' ? "bg-blue-500/20 text-blue-400" :
+                                device.connectionType === 'wifi' ? "bg-green-500/20 text-green-400" :
+                                device.connectionType === 'webrtc' ? "bg-purple-500/20 text-purple-400" :
+                                "bg-muted text-muted-foreground"
+                              )}>
+                                {device.connectionType?.toUpperCase() || 'MESH'}
+                              </span>
+                              {device.signalStrength > 0 && (
+                                <span className="text-muted-foreground">
+                                  {device.signalStrength}% signal
+                                </span>
+                              )}
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                      
+                      {unreadCount > 0 && (
+                        <Badge className="ml-2 bg-primary text-primary-foreground shrink-0">
+                          {unreadCount}
+                        </Badge>
+                      )}
+                    </div>
                   </div>
-                </div>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
         )}
       </ScrollArea>

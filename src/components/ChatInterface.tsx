@@ -16,7 +16,11 @@ import {
   X,
   Image as ImageIcon,
   Paperclip,
-  Mic
+  Mic,
+  Smartphone,
+  Tablet,
+  Laptop,
+  Monitor
 } from 'lucide-react';
 import { formatDistanceToNow, format, isToday, isYesterday } from 'date-fns';
 import { cn } from '@/lib/utils';
@@ -151,6 +155,18 @@ export const ChatInterface = ({
     return format(date, 'MMMM d, yyyy');
   };
 
+  // Get device icon based on type
+  const DeviceTypeIcon = () => {
+    const iconClass = "w-5 h-5";
+    switch (device.type) {
+      case 'phone': return <Smartphone className={iconClass} />;
+      case 'tablet': return <Tablet className={iconClass} />;
+      case 'laptop': return <Laptop className={iconClass} />;
+      case 'desktop': return <Monitor className={iconClass} />;
+      default: return <Smartphone className={iconClass} />;
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
@@ -160,8 +176,13 @@ export const ChatInterface = ({
         </Button>
         
         <div className="relative">
-          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary to-accent flex items-center justify-center text-primary-foreground font-bold">
-            {device.name.charAt(0).toUpperCase()}
+          <div className={cn(
+            "w-11 h-11 rounded-full flex items-center justify-center",
+            device.isOnline || device.isConnected
+              ? "bg-gradient-to-br from-node-active/20 to-primary/20 text-primary border-2 border-node-active/50"
+              : "bg-gradient-to-br from-muted to-secondary text-muted-foreground border-2 border-border"
+          )}>
+            <DeviceTypeIcon />
           </div>
           <div className={cn(
             "absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-card",
@@ -170,14 +191,16 @@ export const ChatInterface = ({
         </div>
         
         <div className="flex-1 min-w-0">
-          <h3 className="font-display font-bold truncate">{device.name}</h3>
-          <p className="text-xs text-muted-foreground">
+          <h3 className="font-bold text-base tracking-tight truncate">{device.name}</h3>
+          <p className="text-xs text-muted-foreground flex items-center gap-2">
+            <span className="capitalize">{device.type}</span>
+            <span>•</span>
             {device.isTyping ? (
               <span className="text-primary animate-pulse">typing...</span>
             ) : device.isOnline || device.isConnected ? (
-              <span className="text-node-active">Online</span>
+              <span className="text-node-active font-medium">Online</span>
             ) : (
-              `Last seen ${formatDistanceToNow(device.lastSeen, { addSuffix: true })}`
+              <span>Last seen {formatDistanceToNow(device.lastSeen, { addSuffix: true })}</span>
             )}
           </p>
         </div>
