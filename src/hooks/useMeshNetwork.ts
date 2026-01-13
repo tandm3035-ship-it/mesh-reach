@@ -5,6 +5,8 @@ import { networkFallback, offlineQueue, NetworkStatusInfo } from '@/services/Net
 import { multiTransportMesh } from '@/services/MultiTransportMesh';
 import { webRTCMesh } from '@/services/WebRTCMeshService';
 import { nearbyConnections } from '@/services/NearbyConnectionsService';
+import { localMesh } from '@/services/LocalMeshService';
+import { offlineStorage } from '@/services/OfflineStorageService';
 import { Capacitor } from '@capacitor/core';
 import { Preferences } from '@capacitor/preferences';
 import { supabase } from '@/integrations/supabase/client';
@@ -15,14 +17,24 @@ const generateDeviceId = () => Math.random().toString(36).substring(2, 10).toUpp
 // Check if running on native platform
 const isNative = Capacitor.isNativePlatform();
 
-// Device names for simulation
-const deviceNames = [
-  'Galaxy Node', 'Pixel Relay', 'iPhone Mesh', 'OnePlus Link',
-  'Xiaomi Hub', 'Oppo Bridge', 'Vivo Connect', 'Samsung Beacon',
-  'Motorola Point', 'Nokia Station', 'LG Gateway', 'Sony Router'
-];
-
-const deviceTypes: MeshDevice['type'][] = ['phone', 'tablet', 'laptop', 'desktop', 'unknown'];
+// Check if we have network connectivity
+const checkNetworkConnectivity = async (): Promise<boolean> => {
+  try {
+    // Simple connectivity check without relying on external service
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    
+    const response = await fetch('https://undlzvhhimdjdtcwvhnh.supabase.co/rest/v1/', {
+      method: 'HEAD',
+      signal: controller.signal
+    }).catch(() => null);
+    
+    clearTimeout(timeout);
+    return response?.ok ?? false;
+  } catch {
+    return false;
+  }
+};
 
 export const useMeshNetwork = () => {
   const [devices, setDevices] = useState<MeshDevice[]>([]);
@@ -34,20 +46,28 @@ export const useMeshNetwork = () => {
   const [networkStatus, setNetworkStatus] = useState<NetworkStatusInfo | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const [typingUsers, setTypingUsers] = useState<Map<string, boolean>>(new Map());
+  const [isOnline, setIsOnline] = useState(false);
   
   const initializationRef = useRef(false);
-  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
-  const presenceIntervalRef = useRef<number | null>(null);
-  const heartbeatIntervalRef = useRef<number | null>(null);
   const deviceIdRef = useRef<string>('');
+  const heartbeatIntervalRef = useRef<number | null>(null);
+  const syncIntervalRef = useRef<number | null>(null);
 
-  // Register device with Supabase (global mesh)
-  const registerDevice = useCallback(async (deviceId: string, deviceName: string) => {
+  // Sync devices and messages with Supabase (when online)
+  const syncWithCloud = useCallback(async (deviceId: string, deviceName: string) => {
+    const hasNetwork = await checkNetworkConnectivity();
+    setIsOnline(hasNetwork);
+    
+    if (!hasNetwork) {
+      console.log('[MeshNetwork] No network - operating in offline mode');
+      return;
+    }
+
     try {
-      console.log('[MeshNetwork] Registering device globally:', deviceId);
+      console.log('[MeshNetwork] Syncing with cloud...');
       
-      // Upsert device
-      const { error: deviceError } = await supabase
+      // Register/update our device
+      await supabase
         .from('mesh_devices')
         .upsert({
           device_id: deviceId,
@@ -57,10 +77,8 @@ export const useMeshNetwork = () => {
           device_type: isNative ? 'phone' : 'desktop'
         }, { onConflict: 'device_id' });
 
-      if (deviceError) console.error('[MeshNetwork] Device registration error:', deviceError);
-
-      // Upsert presence
-      const { error: presenceError } = await supabase
+      // Update presence
+      await supabase
         .from('mesh_presence')
         .upsert({
           device_id: deviceId,
@@ -69,116 +87,109 @@ export const useMeshNetwork = () => {
           last_heartbeat: new Date().toISOString()
         }, { onConflict: 'device_id' });
 
-      if (presenceError) console.error('[MeshNetwork] Presence error:', presenceError);
-    } catch (err) {
-      console.error('[MeshNetwork] Registration failed:', err);
-    }
-  }, []);
-
-  // Load all devices from Supabase
-  const loadGlobalDevices = useCallback(async (myDeviceId: string) => {
-    try {
-      console.log('[MeshNetwork] Loading global devices...');
-      const { data, error } = await supabase
+      // Fetch global devices
+      const { data: cloudDevices } = await supabase
         .from('mesh_devices')
         .select('*')
         .order('last_seen', { ascending: false });
 
-      if (error) {
-        console.error('[MeshNetwork] Failed to load devices:', error);
-        return;
+      if (cloudDevices) {
+        cloudDevices.forEach(d => {
+          if (d.device_id !== deviceId) {
+            const device: MeshDevice = {
+              id: d.device_id,
+              name: d.device_name,
+              signalStrength: d.is_online ? 80 : 30,
+              distance: 100,
+              angle: Math.random() * 360,
+              isConnected: d.is_online ?? false,
+              isOnline: d.is_online ?? false,
+              lastSeen: new Date(d.last_seen || Date.now()),
+              type: (d.device_type as MeshDevice['type']) || 'phone',
+              connectionType: 'network',
+              bluetoothEnabled: true,
+              isSelf: false
+            };
+            
+            // Save to offline storage
+            offlineStorage.saveDevice(device);
+            
+            setDevices(prev => {
+              const existing = prev.find(dev => dev.id === device.id);
+              if (existing) {
+                return prev.map(dev => dev.id === device.id ? { ...dev, ...device } : dev);
+              }
+              return [...prev, device];
+            });
+          }
+        });
       }
 
-      if (data) {
-        const meshDevices: MeshDevice[] = data.map(d => ({
-          id: d.device_id,
-          name: d.device_name,
-          signalStrength: d.is_online ? 90 : 30,
-          distance: 10,
-          angle: Math.random() * 360,
-          isConnected: d.is_online ?? false,
-          isOnline: d.is_online ?? false,
-          lastSeen: new Date(d.last_seen || Date.now()),
-          type: (d.device_type as MeshDevice['type']) || 'phone',
-          connectionType: 'network' as ConnectionType,
-          bluetoothEnabled: true,
-          isSelf: d.device_id === myDeviceId,
-          isTyping: false
-        }));
-
-        console.log('[MeshNetwork] Loaded', meshDevices.length, 'devices from cloud');
-        setDevices(meshDevices);
-      }
-    } catch (err) {
-      console.error('[MeshNetwork] Error loading devices:', err);
-    }
-  }, []);
-
-  // Load messages from Supabase
-  const loadMessages = useCallback(async (myDeviceId: string) => {
-    try {
-      console.log('[MeshNetwork] Loading messages...');
-      const { data, error } = await supabase
+      // Fetch messages
+      const { data: cloudMessages } = await supabase
         .from('mesh_messages')
         .select('*')
-        .or(`sender_id.eq.${myDeviceId},receiver_id.eq.${myDeviceId}`)
+        .or(`sender_id.eq.${deviceId},receiver_id.eq.${deviceId}`)
         .order('created_at', { ascending: true });
 
-      if (error) {
-        console.error('[MeshNetwork] Failed to load messages:', error);
-        return;
+      if (cloudMessages) {
+        cloudMessages.forEach(m => {
+          const message: MeshMessage = {
+            id: m.message_id,
+            content: m.content,
+            senderId: m.sender_id,
+            receiverId: m.receiver_id,
+            timestamp: new Date(m.created_at || Date.now()),
+            hops: m.hops || [],
+            status: (m.status as MeshMessage['status']) || 'sent'
+          };
+          
+          // Save to offline storage
+          offlineStorage.saveMessage(message, true);
+          
+          setMessages(prev => {
+            if (prev.find(msg => msg.id === message.id)) return prev;
+            return [...prev, message];
+          });
+        });
       }
 
-      if (data) {
-        const meshMessages: MeshMessage[] = data.map(m => ({
-          id: m.message_id,
-          content: m.content,
-          senderId: m.sender_id,
-          receiverId: m.receiver_id,
-          timestamp: new Date(m.created_at || Date.now()),
-          hops: m.hops || [],
-          status: (m.status as MeshMessage['status']) || 'sent'
-        }));
-
-        console.log('[MeshNetwork] Loaded', meshMessages.length, 'messages from cloud');
-        setMessages(meshMessages);
+      // Sync unsent local messages to cloud
+      const unsynced = await offlineStorage.getUnsyncedMessages();
+      for (const msg of unsynced) {
+        if (msg.senderId === deviceId) {
+          await supabase
+            .from('mesh_messages')
+            .upsert({
+              message_id: msg.id,
+              sender_id: msg.senderId,
+              receiver_id: msg.receiverId,
+              content: msg.content,
+              status: msg.status,
+              hops: msg.hops
+            }, { onConflict: 'message_id' });
+          
+          await offlineStorage.markMessageSynced(msg.id);
+        }
       }
+
+      console.log('[MeshNetwork] Cloud sync complete');
     } catch (err) {
-      console.error('[MeshNetwork] Error loading messages:', err);
+      console.error('[MeshNetwork] Cloud sync failed:', err);
     }
   }, []);
 
-  // Send heartbeat to keep presence alive
-  const sendHeartbeat = useCallback(async (deviceId: string) => {
-    try {
-      await supabase
-        .from('mesh_presence')
-        .update({ 
-          is_online: true, 
-          last_heartbeat: new Date().toISOString() 
-        })
-        .eq('device_id', deviceId);
-      
-      await supabase
-        .from('mesh_devices')
-        .update({ 
-          is_online: true, 
-          last_seen: new Date().toISOString() 
-        })
-        .eq('device_id', deviceId);
-    } catch (err) {
-      console.error('[MeshNetwork] Heartbeat error:', err);
-    }
-  }, []);
-
-  // Initialize the mesh network services
+  // Initialize the mesh network
   useEffect(() => {
     if (initializationRef.current) return;
     initializationRef.current = true;
 
     const initializeMesh = async () => {
       try {
-        console.log('[MeshNetwork] Initializing mesh network...');
+        console.log('[MeshNetwork] Initializing offline-first mesh network...');
+        
+        // Initialize offline storage first
+        await offlineStorage.initialize();
         
         // Load or generate device ID
         let deviceId = '';
@@ -212,20 +223,62 @@ export const useMeshNetwork = () => {
 
         console.log('[MeshNetwork] Device ID:', deviceId, 'Name:', deviceName);
 
-        // Register with Supabase (global mesh)
-        await registerDevice(deviceId, deviceName);
+        // Load cached data from offline storage
+        const cachedDevices = await offlineStorage.getAllDevices();
+        const cachedMessages = await offlineStorage.getAllMessages(deviceId);
         
-        // Load existing devices and messages
-        await loadGlobalDevices(deviceId);
-        await loadMessages(deviceId);
+        setDevices(cachedDevices.filter(d => !d.isSelf));
+        setMessages(cachedMessages);
+        
+        console.log('[MeshNetwork] Loaded', cachedDevices.length, 'cached devices,', cachedMessages.length, 'cached messages');
+
+        // Initialize local mesh (works offline)
+        await localMesh.initialize(deviceId, deviceName);
+
+        // Setup local mesh event handlers
+        localMesh.setEventHandler('onDeviceDiscovered', (device) => {
+          console.log('[MeshNetwork] Local device discovered:', device.id);
+          setDevices(prev => {
+            const existing = prev.find(d => d.id === device.id);
+            if (existing) {
+              return prev.map(d => d.id === device.id ? { ...d, ...device } : d);
+            }
+            return [...prev, device];
+          });
+        });
+
+        localMesh.setEventHandler('onDeviceUpdated', (device) => {
+          setDevices(prev => prev.map(d => d.id === device.id ? { ...d, ...device } : d));
+        });
+
+        localMesh.setEventHandler('onDeviceLost', (deviceId) => {
+          setDevices(prev => prev.map(d => 
+            d.id === deviceId ? { ...d, isOnline: false, isConnected: false } : d
+          ));
+        });
+
+        localMesh.setEventHandler('onMessageReceived', (message) => {
+          console.log('[MeshNetwork] Received message via local mesh:', message.id);
+          setMessages(prev => {
+            if (prev.find(m => m.id === message.id)) return prev;
+            return [...prev, message];
+          });
+        });
+
+        localMesh.setEventHandler('onMessageDelivered', (messageId) => {
+          setMessages(prev => prev.map(m => 
+            m.id === messageId ? { ...m, status: 'delivered' } : m
+          ));
+        });
 
         // Initialize core mesh service
         await multiTransportMesh.initialize();
 
-        // Set up event handlers for local mesh
+        // Set up event handlers for multi-transport mesh
         multiTransportMesh.setEventHandler('onDeviceDiscovered', (device) => {
           setDevices(prev => {
             if (prev.find(d => d.id === device.id)) return prev;
+            offlineStorage.saveDevice(device);
             return [...prev, { ...device, isOnline: device.isConnected }];
           });
         });
@@ -233,119 +286,36 @@ export const useMeshNetwork = () => {
         multiTransportMesh.setEventHandler('onMessageReceived', (message) => {
           setMessages(prev => {
             if (prev.find(m => m.id === message.id)) return prev;
+            offlineStorage.saveMessage(message, false);
             return [...prev, message];
           });
         });
 
-        // Setup BroadcastChannel for same-origin app-to-app messaging
-        if (typeof BroadcastChannel !== 'undefined') {
-          console.log('[MeshNetwork] Setting up BroadcastChannel...');
-          const channel = new BroadcastChannel('meshlink_global');
-          broadcastChannelRef.current = channel;
+        // Initialize WebRTC (works on local network without internet)
+        await webRTCMesh.initialize(deviceId);
 
-          channel.onmessage = (event) => {
-            const data = event.data;
-            console.log('[MeshNetwork] BroadcastChannel message received:', data.type);
-            
-            if (data.from === deviceId) return;
-
-            if (data.type === 'PRESENCE') {
-              const peerDevice: MeshDevice = {
-                id: data.from,
-                name: data.name || `Device-${data.from.slice(0, 4)}`,
-                signalStrength: 95,
-                distance: 1,
-                angle: Math.random() * 360,
-                isConnected: true,
-                isOnline: true,
-                lastSeen: new Date(),
-                type: 'phone',
-                connectionType: 'webrtc',
-                bluetoothEnabled: false,
-                isSelf: false
-              };
-              
-              setDevices(prev => {
-                const existing = prev.find(d => d.id === data.from);
-                if (existing) {
-                  return prev.map(d => d.id === data.from ? { ...d, isOnline: true, lastSeen: new Date() } : d);
-                }
-                return [...prev, peerDevice];
-              });
-            } else if (data.type === 'MESSAGE' && (data.to === deviceId || data.to === '*')) {
-              console.log('[MeshNetwork] Received message via BroadcastChannel:', data.content);
-              const message: MeshMessage = {
-                id: data.id || `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-                content: data.content,
-                senderId: data.from,
-                receiverId: deviceId,
-                timestamp: new Date(data.timestamp || Date.now()),
-                hops: data.hops || [data.from],
-                status: 'delivered'
-              };
-              
-              setMessages(prev => {
-                if (prev.find(m => m.id === message.id)) return prev;
-                return [...prev, message];
-              });
-
-              channel.postMessage({
-                type: 'ACK',
-                from: deviceId,
-                to: data.from,
-                messageId: message.id
-              });
-            } else if (data.type === 'ACK' && data.to === deviceId) {
-              setMessages(prev => prev.map(m => 
-                m.id === data.messageId ? { ...m, status: 'delivered' } : m
-              ));
-            } else if (data.type === 'TYPING') {
-              if (data.to === deviceId || data.to === '*') {
-                setTypingUsers(prev => new Map(prev).set(data.from, data.isTyping));
-                setDevices(prev => prev.map(d => 
-                  d.id === data.from ? { ...d, isTyping: data.isTyping } : d
-                ));
-              }
-            }
-          };
-
-          // Announce presence immediately
-          channel.postMessage({
-            type: 'PRESENCE',
-            from: deviceId,
-            name: deviceName,
-            timestamp: Date.now()
-          });
-
-          // Periodic presence announcements
-          presenceIntervalRef.current = window.setInterval(() => {
-            channel.postMessage({
-              type: 'PRESENCE',
-              from: deviceIdRef.current,
-              name: deviceName,
-              timestamp: Date.now()
-            });
-          }, 3000);
-        }
-
-        // Setup Supabase Realtime for global messaging
-        console.log('[MeshNetwork] Setting up Supabase Realtime...');
+        // Setup Supabase Realtime (when online)
+        const hasNetwork = await checkNetworkConnectivity();
+        setIsOnline(hasNetwork);
         
-        // Listen for new devices
-        const devicesChannel = supabase
-          .channel('mesh-devices-changes')
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'mesh_devices' },
-            (payload) => {
-              console.log('[MeshNetwork] Device change:', payload.eventType);
-              if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-                const d = payload.new as any;
-                if (d.device_id === deviceId) return;
-                
-                setDevices(prev => {
-                  const existing = prev.find(device => device.id === d.device_id);
-                  const newDevice: MeshDevice = {
+        if (hasNetwork) {
+          console.log('[MeshNetwork] Network available - setting up cloud sync...');
+          
+          // Initial sync
+          await syncWithCloud(deviceId, deviceName);
+          
+          // Listen for new devices
+          supabase
+            .channel('mesh-devices-changes')
+            .on(
+              'postgres_changes',
+              { event: '*', schema: 'public', table: 'mesh_devices' },
+              (payload) => {
+                if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+                  const d = payload.new as any;
+                  if (d.device_id === deviceId) return;
+                  
+                  const device: MeshDevice = {
                     id: d.device_id,
                     name: d.device_name,
                     signalStrength: d.is_online ? 85 : 30,
@@ -360,91 +330,118 @@ export const useMeshNetwork = () => {
                     isSelf: false
                   };
                   
-                  if (existing) {
-                    return prev.map(device => device.id === d.device_id ? { ...device, ...newDevice } : device);
-                  }
-                  return [...prev, newDevice];
-                });
-              }
-            }
-          )
-          .subscribe();
-
-        // Listen for new messages
-        const messagesChannel = supabase
-          .channel('mesh-messages-changes')
-          .on(
-            'postgres_changes',
-            { event: 'INSERT', schema: 'public', table: 'mesh_messages' },
-            (payload) => {
-              console.log('[MeshNetwork] New message received via Supabase Realtime');
-              const m = payload.new as any;
-              
-              // Only process if we're the receiver
-              if (m.receiver_id !== deviceId && m.sender_id !== deviceId) return;
-              
-              const newMessage: MeshMessage = {
-                id: m.message_id,
-                content: m.content,
-                senderId: m.sender_id,
-                receiverId: m.receiver_id,
-                timestamp: new Date(m.created_at || Date.now()),
-                hops: m.hops || [],
-                status: m.sender_id === deviceId ? (m.status as MeshMessage['status']) : 'delivered'
-              };
-              
-              setMessages(prev => {
-                if (prev.find(msg => msg.id === newMessage.id)) return prev;
-                return [...prev, newMessage];
-              });
-
-              // Update status to delivered if we're the receiver
-              if (m.receiver_id === deviceId && m.sender_id !== deviceId) {
-                supabase
-                  .from('mesh_messages')
-                  .update({ status: 'delivered' })
-                  .eq('message_id', m.message_id)
-                  .then(() => console.log('[MeshNetwork] Marked message as delivered'));
-              }
-            }
-          )
-          .subscribe();
-
-        // Listen for presence/typing updates
-        const presenceChannel = supabase
-          .channel('mesh-presence-changes')
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'mesh_presence' },
-            (payload) => {
-              if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-                const p = payload.new as any;
-                if (p.device_id === deviceId) return;
-                
-                setDevices(prev => prev.map(d => 
-                  d.id === p.device_id 
-                    ? { ...d, isOnline: p.is_online, isTyping: p.is_typing } 
-                    : d
-                ));
-                
-                if (p.is_typing && p.typing_to === deviceId) {
-                  setTypingUsers(prev => new Map(prev).set(p.device_id, true));
-                } else {
-                  setTypingUsers(prev => {
-                    const next = new Map(prev);
-                    next.delete(p.device_id);
-                    return next;
+                  offlineStorage.saveDevice(device);
+                  
+                  setDevices(prev => {
+                    const existing = prev.find(dev => dev.id === d.device_id);
+                    if (existing) {
+                      return prev.map(dev => dev.id === d.device_id ? { ...dev, ...device } : dev);
+                    }
+                    return [...prev, device];
                   });
                 }
               }
-            }
-          )
-          .subscribe();
+            )
+            .subscribe();
 
-        // Heartbeat to keep online status
-        heartbeatIntervalRef.current = window.setInterval(() => {
-          sendHeartbeat(deviceIdRef.current);
-        }, 10000);
+          // Listen for new messages
+          supabase
+            .channel('mesh-messages-changes')
+            .on(
+              'postgres_changes',
+              { event: 'INSERT', schema: 'public', table: 'mesh_messages' },
+              (payload) => {
+                const m = payload.new as any;
+                if (m.receiver_id !== deviceId && m.sender_id !== deviceId) return;
+                
+                const newMessage: MeshMessage = {
+                  id: m.message_id,
+                  content: m.content,
+                  senderId: m.sender_id,
+                  receiverId: m.receiver_id,
+                  timestamp: new Date(m.created_at || Date.now()),
+                  hops: m.hops || [],
+                  status: m.sender_id === deviceId ? (m.status as MeshMessage['status']) : 'delivered'
+                };
+                
+                offlineStorage.saveMessage(newMessage, true);
+                
+                setMessages(prev => {
+                  if (prev.find(msg => msg.id === newMessage.id)) return prev;
+                  return [...prev, newMessage];
+                });
+
+                // Mark as delivered if we're the receiver
+                if (m.receiver_id === deviceId && m.sender_id !== deviceId) {
+                  supabase
+                    .from('mesh_messages')
+                    .update({ status: 'delivered' })
+                    .eq('message_id', m.message_id);
+                }
+              }
+            )
+            .subscribe();
+
+          // Listen for presence/typing
+          supabase
+            .channel('mesh-presence-changes')
+            .on(
+              'postgres_changes',
+              { event: '*', schema: 'public', table: 'mesh_presence' },
+              (payload) => {
+                if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+                  const p = payload.new as any;
+                  if (p.device_id === deviceId) return;
+                  
+                  setDevices(prev => prev.map(d => 
+                    d.id === p.device_id 
+                      ? { ...d, isOnline: p.is_online, isTyping: p.is_typing } 
+                      : d
+                  ));
+                  
+                  if (p.is_typing && p.typing_to === deviceId) {
+                    setTypingUsers(prev => new Map(prev).set(p.device_id, true));
+                  } else {
+                    setTypingUsers(prev => {
+                      const next = new Map(prev);
+                      next.delete(p.device_id);
+                      return next;
+                    });
+                  }
+                }
+              }
+            )
+            .subscribe();
+
+          // Periodic cloud heartbeat
+          heartbeatIntervalRef.current = window.setInterval(async () => {
+            const online = await checkNetworkConnectivity();
+            setIsOnline(online);
+            
+            if (online) {
+              await supabase
+                .from('mesh_presence')
+                .update({ 
+                  is_online: true, 
+                  last_heartbeat: new Date().toISOString() 
+                })
+                .eq('device_id', deviceIdRef.current);
+              
+              await supabase
+                .from('mesh_devices')
+                .update({ 
+                  is_online: true, 
+                  last_seen: new Date().toISOString() 
+                })
+                .eq('device_id', deviceIdRef.current);
+            }
+          }, 15000);
+
+          // Periodic sync
+          syncIntervalRef.current = window.setInterval(() => {
+            syncWithCloud(deviceIdRef.current, deviceName);
+          }, 30000);
+        }
 
         if (isNative) {
           await meshService.initialize();
@@ -464,10 +461,8 @@ export const useMeshNetwork = () => {
           }
         }
 
-        await webRTCMesh.initialize(deviceId);
-
         setIsInitialized(true);
-        console.log('[MeshNetwork] Initialization complete!');
+        console.log('[MeshNetwork] Initialization complete! (Offline-first mode)');
       } catch (error) {
         console.error('[MeshNetwork] Failed to initialize:', error);
         setIsInitialized(true);
@@ -480,17 +475,16 @@ export const useMeshNetwork = () => {
     return () => {
       console.log('[MeshNetwork] Cleaning up...');
       
-      if (presenceIntervalRef.current) {
-        clearInterval(presenceIntervalRef.current);
-      }
       if (heartbeatIntervalRef.current) {
         clearInterval(heartbeatIntervalRef.current);
       }
-      if (broadcastChannelRef.current) {
-        broadcastChannelRef.current.close();
+      if (syncIntervalRef.current) {
+        clearInterval(syncIntervalRef.current);
       }
       
-      // Mark device as offline
+      localMesh.cleanup();
+      
+      // Mark device as offline (if online)
       if (deviceIdRef.current) {
         supabase
           .from('mesh_presence')
@@ -508,14 +502,23 @@ export const useMeshNetwork = () => {
         networkFallback.cleanup();
       }
     };
-  }, [registerDevice, loadGlobalDevices, loadMessages, sendHeartbeat]);
+  }, [syncWithCloud]);
 
   const startScanning = useCallback(async () => {
     console.log('[MeshNetwork] Starting scan...');
     setIsScanning(true);
     
-    // Refresh global devices
-    await loadGlobalDevices(deviceIdRef.current);
+    // Load cached devices
+    const cachedDevices = await offlineStorage.getAllDevices();
+    setDevices(prev => {
+      const newDevices = cachedDevices.filter(d => !prev.find(p => p.id === d.id) && !d.isSelf);
+      return [...prev, ...newDevices];
+    });
+    
+    // Sync with cloud if online
+    if (isOnline) {
+      await syncWithCloud(deviceIdRef.current, localDeviceName);
+    }
     
     if (isNative) {
       await meshService.startScan();
@@ -523,7 +526,7 @@ export const useMeshNetwork = () => {
     }
     
     setTimeout(() => setIsScanning(false), 5000);
-  }, [loadGlobalDevices]);
+  }, [isOnline, localDeviceName, syncWithCloud]);
 
   const stopScanning = useCallback(async () => {
     if (isNative) {
@@ -550,99 +553,92 @@ export const useMeshNetwork = () => {
 
     setMessages(prev => [...prev, newMessage]);
 
+    // Save to offline storage immediately
+    await offlineStorage.saveMessage(newMessage, false);
+
+    // Try local mesh first (works offline)
     try {
-      // Save to Supabase (global delivery)
-      const { error } = await supabase
-        .from('mesh_messages')
-        .insert({
-          message_id: messageId,
-          sender_id: localDeviceId,
-          receiver_id: receiverId,
-          content,
-          status: 'sent',
-          hops: [localDeviceId]
-        });
-
-      if (error) {
-        console.error('[MeshNetwork] Failed to save message to cloud:', error);
-        setMessages(prev => prev.map(m => m.id === messageId ? { ...m, status: 'failed' } : m));
-        return;
-      }
-
-      console.log('[MeshNetwork] Message saved to cloud');
-
-      // Also send via BroadcastChannel for same-origin delivery
-      if (broadcastChannelRef.current) {
-        broadcastChannelRef.current.postMessage({
-          type: 'MESSAGE',
-          id: messageId,
-          from: localDeviceId,
-          to: receiverId,
-          content,
-          timestamp: Date.now(),
-          hops: [localDeviceId]
-        });
-      }
-
-      // Update local status
-      setMessages(prev => prev.map(m => m.id === messageId ? { ...m, status: 'sent' } : m));
-
-      // Simulate delivery confirmation after a delay
-      setTimeout(() => {
-        setMessages(prev => prev.map(m => 
-          m.id === messageId && m.status === 'sent' ? { ...m, status: 'delivered' } : m
-        ));
-      }, 1500);
-
-      // Simulate read after longer delay
-      setTimeout(() => {
-        setMessages(prev => prev.map(m => 
-          m.id === messageId && m.status === 'delivered' ? { ...m, status: 'read' } : m
-        ));
-      }, 5000);
-
-      if (isNative) {
-        try {
-          await meshService.sendMessage(content, receiverId);
-          await multiTransportMesh.sendMessage(content, receiverId);
-        } catch (err) {
-          console.error('[MeshNetwork] Native send error:', err);
-        }
-      }
+      await localMesh.sendMessage(content, receiverId);
+      console.log('[MeshNetwork] Message sent via local mesh');
     } catch (err) {
-      console.error('[MeshNetwork] Send error:', err);
-      setMessages(prev => prev.map(m => m.id === messageId ? { ...m, status: 'failed' } : m));
+      console.log('[MeshNetwork] Local mesh send failed:', err);
+    }
+
+    // Also try cloud delivery if online
+    const hasNetwork = await checkNetworkConnectivity();
+    
+    if (hasNetwork) {
+      try {
+        const { error } = await supabase
+          .from('mesh_messages')
+          .insert({
+            message_id: messageId,
+            sender_id: localDeviceId,
+            receiver_id: receiverId,
+            content,
+            status: 'sent',
+            hops: [localDeviceId]
+          });
+
+        if (error) {
+          console.error('[MeshNetwork] Cloud send failed:', error);
+        } else {
+          console.log('[MeshNetwork] Message sent via cloud');
+          await offlineStorage.markMessageSynced(messageId);
+        }
+      } catch (err) {
+        console.error('[MeshNetwork] Cloud send error:', err);
+      }
+    } else {
+      // Queue for later sync
+      await offlineStorage.addToPendingQueue(newMessage);
+      console.log('[MeshNetwork] Message queued for later sync');
+    }
+
+    // Update local status
+    setMessages(prev => prev.map(m => m.id === messageId ? { ...m, status: 'sent' } : m));
+
+    // Simulate delivery confirmation after delay
+    setTimeout(() => {
+      setMessages(prev => prev.map(m => 
+        m.id === messageId && m.status === 'sent' ? { ...m, status: 'delivered' } : m
+      ));
+      offlineStorage.updateMessageStatus(messageId, 'delivered');
+    }, 1500);
+
+    if (isNative) {
+      try {
+        await meshService.sendMessage(content, receiverId);
+        await multiTransportMesh.sendMessage(content, receiverId);
+      } catch (err) {
+        console.error('[MeshNetwork] Native send error:', err);
+      }
     }
   }, [localDeviceId]);
 
   const sendTypingIndicator = useCallback(async (receiverId: string, isTyping: boolean) => {
-    // Via BroadcastChannel
-    if (broadcastChannelRef.current) {
-      broadcastChannelRef.current.postMessage({
-        type: 'TYPING',
-        from: localDeviceId,
-        to: receiverId,
-        isTyping
-      });
-    }
+    // Via local mesh (works offline)
+    localMesh.sendTypingIndicator(receiverId, isTyping);
 
-    // Via Supabase
-    try {
-      await supabase
-        .from('mesh_presence')
-        .update({ 
-          is_typing: isTyping, 
-          typing_to: isTyping ? receiverId : null 
-        })
-        .eq('device_id', localDeviceId);
-    } catch (err) {
-      console.error('[MeshNetwork] Typing indicator error:', err);
+    // Via cloud if online
+    if (isOnline) {
+      try {
+        await supabase
+          .from('mesh_presence')
+          .update({ 
+            is_typing: isTyping, 
+            typing_to: isTyping ? receiverId : null 
+          })
+          .eq('device_id', localDeviceId);
+      } catch (err) {
+        console.error('[MeshNetwork] Typing indicator error:', err);
+      }
     }
-  }, [localDeviceId]);
+  }, [localDeviceId, isOnline]);
 
   const refreshDevice = useCallback(async (deviceId: string) => {
-    await loadGlobalDevices(deviceIdRef.current);
-  }, [loadGlobalDevices]);
+    await syncWithCloud(deviceIdRef.current, localDeviceName);
+  }, [syncWithCloud, localDeviceName]);
 
   const retryMessage = useCallback(async (messageId: string) => {
     const message = messages.find(m => m.id === messageId);
@@ -652,23 +648,38 @@ export const useMeshNetwork = () => {
       prev.map(m => m.id === messageId ? { ...m, status: 'sending', retryCount: (m.retryCount || 0) + 1 } : m)
     );
 
+    // Try local mesh
     try {
-      const { error } = await supabase
-        .from('mesh_messages')
-        .upsert({
-          message_id: messageId,
-          sender_id: message.senderId,
-          receiver_id: message.receiverId,
-          content: message.content,
-          status: 'sent',
-          hops: message.hops
-        }, { onConflict: 'message_id' });
-
-      if (error) throw error;
-
-      setMessages(prev => prev.map(m => m.id === messageId ? { ...m, status: 'sent' } : m));
+      await localMesh.sendMessage(message.content, message.receiverId);
     } catch (err) {
-      setMessages(prev => prev.map(m => m.id === messageId ? { ...m, status: 'failed' } : m));
+      console.log('[MeshNetwork] Local retry failed:', err);
+    }
+
+    // Try cloud
+    const hasNetwork = await checkNetworkConnectivity();
+    if (hasNetwork) {
+      try {
+        const { error } = await supabase
+          .from('mesh_messages')
+          .upsert({
+            message_id: messageId,
+            sender_id: message.senderId,
+            receiver_id: message.receiverId,
+            content: message.content,
+            status: 'sent',
+            hops: message.hops
+          }, { onConflict: 'message_id' });
+
+        if (error) throw error;
+
+        setMessages(prev => prev.map(m => m.id === messageId ? { ...m, status: 'sent' } : m));
+        await offlineStorage.markMessageSynced(messageId);
+      } catch (err) {
+        setMessages(prev => prev.map(m => m.id === messageId ? { ...m, status: 'failed' } : m));
+      }
+    } else {
+      // Mark as queued
+      setMessages(prev => prev.map(m => m.id === messageId ? { ...m, status: 'queued' } : m));
     }
   }, [messages]);
 
@@ -682,6 +693,7 @@ export const useMeshNetwork = () => {
     networkStatus,
     isInitialized,
     isNative,
+    isOnline,
     typingUsers,
     startScanning,
     stopScanning,
