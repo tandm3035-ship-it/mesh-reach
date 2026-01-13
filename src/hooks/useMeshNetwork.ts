@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { MeshDevice, MeshMessage, ConnectionType } from '@/types/mesh';
-import { meshService, BluetoothMeshService } from '@/services/BluetoothMeshService';
+import { meshService } from '@/services/BluetoothMeshService';
 import { networkFallback, offlineQueue, NetworkStatusInfo } from '@/services/NetworkFallbackService';
+import { multiTransportMesh } from '@/services/MultiTransportMesh';
+import { webRTCMesh } from '@/services/WebRTCMeshService';
+import { nearbyConnections } from '@/services/NearbyConnectionsService';
 import { Capacitor } from '@capacitor/core';
 
 // Generate a consistent device ID for web simulation
@@ -50,54 +53,58 @@ export const useMeshNetwork = () => {
 
     const initializeMesh = async () => {
       try {
+        // Initialize core mesh service
+        await multiTransportMesh.initialize();
+        setLocalDeviceId(multiTransportMesh.getLocalDeviceId());
+
+        // Set up event handlers for multi-transport mesh
+        multiTransportMesh.setEventHandler('onDeviceDiscovered', (device) => {
+          setDevices(prev => {
+            if (prev.find(d => d.id === device.id)) return prev;
+            return [...prev, device];
+          });
+        });
+
+        multiTransportMesh.setEventHandler('onDeviceUpdated', (device) => {
+          setDevices(prev => prev.map(d => d.id === device.id ? device : d));
+        });
+
+        multiTransportMesh.setEventHandler('onDeviceLost', (deviceId) => {
+          setDevices(prev => prev.filter(d => d.id !== deviceId));
+        });
+
+        multiTransportMesh.setEventHandler('onMessageReceived', (message) => {
+          setMessages(prev => [...prev, message]);
+        });
+
+        multiTransportMesh.setEventHandler('onMessageStatusChanged', (messageId, status) => {
+          setMessages(prev => prev.map(m => m.id === messageId ? { ...m, status } : m));
+        });
+
+        multiTransportMesh.setEventHandler('onScanStateChanged', (scanning) => {
+          setIsScanning(scanning);
+        });
+
         if (isNative) {
-          // Initialize native Bluetooth mesh
-          const success = await meshService.initialize();
-          if (success) {
-            setLocalDeviceId(meshService.getLocalDeviceId());
-            
-            // Set up event handlers
-            meshService.setEventHandler('onDeviceDiscovered', (device) => {
-              setDevices(prev => {
-                if (prev.find(d => d.id === device.id)) return prev;
-                return [...prev, device];
-              });
-            });
-
-            meshService.setEventHandler('onDeviceUpdated', (device) => {
-              setDevices(prev => 
-                prev.map(d => d.id === device.id ? device : d)
-              );
-            });
-
-            meshService.setEventHandler('onDeviceLost', (deviceId) => {
-              setDevices(prev => prev.filter(d => d.id !== deviceId));
-            });
-
-            meshService.setEventHandler('onMessageReceived', (message) => {
-              setMessages(prev => [...prev, message]);
-            });
-
-            meshService.setEventHandler('onMessageStatusChanged', (messageId, status) => {
-              setMessages(prev => 
-                prev.map(m => m.id === messageId ? { ...m, status } : m)
-              );
-            });
-
-            meshService.setEventHandler('onScanStateChanged', (scanning) => {
-              setIsScanning(scanning);
-            });
-
-            meshService.setEventHandler('onError', (error) => {
-              console.error('Mesh error:', error);
-            });
-          }
+          // Initialize Bluetooth mesh
+          await meshService.initialize();
+          
+          // Initialize Nearby Connections (WiFi P2P)
+          await nearbyConnections.initialize(
+            multiTransportMesh.getLocalDeviceId(),
+            multiTransportMesh.getLocalDeviceName()
+          );
 
           // Initialize network fallback
           const status = await networkFallback.initialize();
           setNetworkStatus(status);
           setConnectionMethod(status.connectionType as ConnectionType);
+        }
 
+        // Initialize WebRTC (works on both web and native)
+        await webRTCMesh.initialize(multiTransportMesh.getLocalDeviceId());
+
+        if (isNative) {
           networkFallback.setEventHandler('onStatusChanged', (status) => {
             setNetworkStatus(status);
           });
