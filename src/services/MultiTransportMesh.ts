@@ -6,18 +6,13 @@ import { MeshPacket, createPacket, decodePacket, encodePacket, verifyPacket, sho
 import { Preferences } from '@capacitor/preferences';
 import { Capacitor } from '@capacitor/core';
 
-// Dynamic import for local notifications (only available on native)
-let LocalNotifications: any = null;
-const loadLocalNotifications = async () => {
-  if (Capacitor.isNativePlatform() && !LocalNotifications) {
-    try {
-      const module = await import('@capacitor/local-notifications');
-      LocalNotifications = module.LocalNotifications;
-    } catch (e) {
-      console.log('Local notifications not available');
-    }
+// Access local notifications via Capacitor.Plugins at runtime (avoids build-time resolution)
+const getLocalNotifications = (): any => {
+  if (Capacitor.isNativePlatform()) {
+    // Access plugin directly from Capacitor at runtime
+    return (Capacitor as any).Plugins?.LocalNotifications || null;
   }
-  return LocalNotifications;
+  return null;
 };
 
 export type TransportType = 'bluetooth' | 'wifi-direct' | 'webrtc' | 'network' | 'ultrasonic' | 'nfc';
@@ -143,7 +138,7 @@ export class MultiTransportMeshService {
       // Request notification permissions
       if (Capacitor.isNativePlatform()) {
         try {
-          const notifications = await loadLocalNotifications();
+          const notifications = getLocalNotifications();
           if (notifications) {
             const permission = await notifications.requestPermissions();
             console.log('Notification permission:', permission);
@@ -315,7 +310,7 @@ export class MultiTransportMeshService {
     this.deliveredNotificationIds.add(message.id);
 
     try {
-      const notifications = await loadLocalNotifications();
+      const notifications = getLocalNotifications();
       if (!notifications) return;
 
       await notifications.schedule({
