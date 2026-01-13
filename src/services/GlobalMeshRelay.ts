@@ -55,6 +55,9 @@ class GlobalMeshRelayService {
   
   // Signaling queue for WebRTC
   private pendingSignals: Map<string, any[]> = new Map();
+  
+  // Track processed message IDs to avoid duplicates
+  private processedMessageIds: Set<string> = new Set();
 
   setEventHandler<K extends keyof GlobalMeshEvents>(event: K, handler: GlobalMeshEvents[K]) {
     this.events[event] = handler;
@@ -149,6 +152,9 @@ class GlobalMeshRelayService {
       // Fetch existing online devices
       await this.fetchOnlineDevices();
       
+      // CRITICAL: Fetch historical messages for this device
+      await this.fetchHistoricalMessages();
+      
       // Start heartbeat
       this.startHeartbeat();
       
@@ -203,7 +209,7 @@ class GlobalMeshRelayService {
       .on('presence', { event: 'join' }, ({ key, newPresences }) => {
         this.handlePresenceJoin(key, newPresences);
       })
-      .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
+      .on('presence', { event: 'leave' }, ({ key }) => {
         this.handlePresenceLeave(key);
       })
       .subscribe(async (status) => {
@@ -347,13 +353,21 @@ class GlobalMeshRelayService {
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'mesh_messages' },
-        (payload) => {
+        async (payload) => {
           const m = payload.new as any;
           
           // Only process messages for us
           if (m.receiver_id !== this.localDeviceId) return;
           // Don't process our own messages
           if (m.sender_id === this.localDeviceId) return;
+          // Don't process duplicates
+          if (this.processedMessageIds.has(m.message_id)) return;
+          
+          this.processedMessageIds.add(m.message_id);
+
+          // Check if already exists in local storage
+          const exists = await offlineStorage.messageExists(m.message_id);
+          if (exists) return;
 
           const message: MeshMessage = {
             id: m.message_id,
@@ -368,7 +382,7 @@ class GlobalMeshRelayService {
           console.log('[GlobalRelay] Message received via global relay:', message.id);
           
           // Save locally
-          offlineStorage.saveMessage(message, true);
+          await offlineStorage.saveMessage(message, true);
           
           // Emit event
           this.events.onMessageReceived?.(message);
@@ -395,6 +409,87 @@ class GlobalMeshRelayService {
       .from('mesh_messages')
       .update({ status: 'delivered' })
       .eq('message_id', messageId);
+  }
+
+  private async fetchHistoricalMessages() {
+    console.log('[GlobalRelay] Fetching historical messages for:', this.localDeviceId);
+    
+    try {
+      // Fetch messages where we are the receiver (messages sent TO us)
+      const { data: receivedMessages, error: recvError } = await supabase
+        .from('mesh_messages')
+        .select('*')
+        .eq('receiver_id', this.localDeviceId)
+        .order('created_at', { ascending: true });
+
+      if (recvError) {
+        console.error('[GlobalRelay] Failed to fetch received messages:', recvError);
+      } else {
+        console.log('[GlobalRelay] Found', receivedMessages?.length || 0, 'messages for this device');
+        
+        for (const m of receivedMessages || []) {
+          // Skip if already processed
+          if (this.processedMessageIds.has(m.message_id)) continue;
+          
+          // Check if exists locally
+          const exists = await offlineStorage.messageExists(m.message_id);
+          if (exists) {
+            this.processedMessageIds.add(m.message_id);
+            continue;
+          }
+
+          const message: MeshMessage = {
+            id: m.message_id,
+            content: m.content,
+            senderId: m.sender_id,
+            receiverId: m.receiver_id,
+            timestamp: new Date(m.created_at || Date.now()),
+            hops: m.hops || [],
+            status: (m.status as MeshMessage['status']) || 'delivered'
+          };
+
+          await offlineStorage.saveMessage(message, true);
+          this.processedMessageIds.add(m.message_id);
+          this.events.onMessageReceived?.(message);
+        }
+      }
+
+      // Also fetch messages WE sent (so they show on other devices)
+      const { data: sentMessages, error: sentError } = await supabase
+        .from('mesh_messages')
+        .select('*')
+        .eq('sender_id', this.localDeviceId)
+        .order('created_at', { ascending: true });
+
+      if (sentError) {
+        console.error('[GlobalRelay] Failed to fetch sent messages:', sentError);
+      } else {
+        for (const m of sentMessages || []) {
+          if (this.processedMessageIds.has(m.message_id)) continue;
+          
+          const exists = await offlineStorage.messageExists(m.message_id);
+          if (exists) {
+            this.processedMessageIds.add(m.message_id);
+            continue;
+          }
+
+          const message: MeshMessage = {
+            id: m.message_id,
+            content: m.content,
+            senderId: m.sender_id,
+            receiverId: m.receiver_id,
+            timestamp: new Date(m.created_at || Date.now()),
+            hops: m.hops || [],
+            status: (m.status as MeshMessage['status']) || 'sent'
+          };
+
+          await offlineStorage.saveMessage(message, true);
+          this.processedMessageIds.add(m.message_id);
+        }
+      }
+    } catch (error) {
+      console.error('[GlobalRelay] Error fetching historical messages:', error);
+    }
   }
 
   private async fetchOnlineDevices() {
@@ -493,6 +588,9 @@ class GlobalMeshRelayService {
         console.error('[GlobalRelay] Failed to send message:', error);
         throw error;
       }
+
+      // Mark as processed to avoid re-fetching
+      this.processedMessageIds.add(messageId);
 
       console.log('[GlobalRelay] Message sent via global relay:', messageId);
       return messageId;
@@ -594,6 +692,7 @@ class GlobalMeshRelayService {
           }, { onConflict: 'message_id' });
 
         await offlineStorage.markMessageSynced(msg.id);
+        this.processedMessageIds.add(msg.id);
         console.log('[GlobalRelay] Synced pending message:', msg.id);
       } catch (error) {
         console.error('[GlobalRelay] Failed to sync message:', msg.id, error);
@@ -641,6 +740,7 @@ class GlobalMeshRelayService {
 
     this.globalDevices.clear();
     this.pendingSignals.clear();
+    this.processedMessageIds.clear();
     this.isInitialized = false;
   }
 }

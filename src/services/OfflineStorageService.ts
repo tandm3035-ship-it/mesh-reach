@@ -3,8 +3,8 @@
 
 import { MeshDevice, MeshMessage } from '@/types/mesh';
 
-const DB_NAME = 'meshlink_offline';
-const DB_VERSION = 2;
+const DB_NAME = 'meshlink_offline_v3';
+const DB_VERSION = 3;
 
 interface StoredDevice extends MeshDevice {
   storedAt: number;
@@ -13,6 +13,7 @@ interface StoredDevice extends MeshDevice {
 interface StoredMessage extends MeshMessage {
   storedAt: number;
   synced: boolean;
+  conversationKey: string; // For efficient conversation lookups
 }
 
 interface PendingMessage {
@@ -20,6 +21,12 @@ interface PendingMessage {
   message: MeshMessage;
   retries: number;
   lastAttempt: number;
+}
+
+interface DeviceIdentity {
+  deviceId: string;
+  deviceName: string;
+  createdAt: number;
 }
 
 class OfflineStorageService {
@@ -55,13 +62,14 @@ class OfflineStorageService {
             devicesStore.createIndex('isOnline', 'isOnline', { unique: false });
           }
 
-          // Messages store
+          // Messages store with conversation key for efficient lookups
           if (!db.objectStoreNames.contains('messages')) {
             const messagesStore = db.createObjectStore('messages', { keyPath: 'id' });
             messagesStore.createIndex('senderId', 'senderId', { unique: false });
             messagesStore.createIndex('receiverId', 'receiverId', { unique: false });
             messagesStore.createIndex('timestamp', 'timestamp', { unique: false });
             messagesStore.createIndex('synced', 'synced', { unique: false });
+            messagesStore.createIndex('conversationKey', 'conversationKey', { unique: false });
           }
 
           // Pending messages store (for retry queue)
@@ -75,12 +83,47 @@ class OfflineStorageService {
             db.createObjectStore('config', { keyPath: 'key' });
           }
 
+          // Device identity - persistent across sessions
+          if (!db.objectStoreNames.contains('identity')) {
+            db.createObjectStore('identity', { keyPath: 'key' });
+          }
+
           console.log('[OfflineStorage] Database schema created');
         };
       } catch (e) {
         console.error('[OfflineStorage] IndexedDB not available:', e);
         resolve(false);
       }
+    });
+  }
+
+  // ============ DEVICE IDENTITY ============
+  
+  async getDeviceIdentity(): Promise<DeviceIdentity | null> {
+    if (!this.db) return null;
+
+    return new Promise((resolve, reject) => {
+      const transaction = this.db!.transaction(['identity'], 'readonly');
+      const store = transaction.objectStore('identity');
+      const request = store.get('device_identity');
+
+      request.onsuccess = () => {
+        resolve(request.result?.value ?? null);
+      };
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async setDeviceIdentity(identity: DeviceIdentity): Promise<void> {
+    if (!this.db) return;
+
+    return new Promise((resolve, reject) => {
+      const transaction = this.db!.transaction(['identity'], 'readwrite');
+      const store = transaction.objectStore('identity');
+      const request = store.put({ key: 'device_identity', value: identity });
+
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
     });
   }
 
@@ -162,6 +205,12 @@ class OfflineStorageService {
 
   // ============ MESSAGE OPERATIONS ============
 
+  private getConversationKey(senderId: string, receiverId: string): string {
+    // Create a consistent key regardless of sender/receiver order
+    const sorted = [senderId, receiverId].sort();
+    return `${sorted[0]}:${sorted[1]}`;
+  }
+
   async saveMessage(message: MeshMessage, synced = false): Promise<void> {
     if (!this.db) return;
 
@@ -173,7 +222,8 @@ class OfflineStorageService {
         ...message,
         storedAt: Date.now(),
         synced,
-        timestamp: message.timestamp instanceof Date ? message.timestamp : new Date(message.timestamp)
+        timestamp: message.timestamp instanceof Date ? message.timestamp : new Date(message.timestamp),
+        conversationKey: this.getConversationKey(message.senderId, message.receiverId)
       };
 
       const request = store.put(storedMessage);
@@ -208,17 +258,16 @@ class OfflineStorageService {
   async getMessagesForConversation(deviceId1: string, deviceId2: string): Promise<MeshMessage[]> {
     if (!this.db) return [];
 
+    const conversationKey = this.getConversationKey(deviceId1, deviceId2);
+
     return new Promise((resolve, reject) => {
       const transaction = this.db!.transaction(['messages'], 'readonly');
       const store = transaction.objectStore('messages');
-      const request = store.getAll();
+      const index = store.index('conversationKey');
+      const request = index.getAll(IDBKeyRange.only(conversationKey));
 
       request.onsuccess = () => {
         const results = (request.result as StoredMessage[])
-          .filter(m => 
-            (m.senderId === deviceId1 && m.receiverId === deviceId2) ||
-            (m.senderId === deviceId2 && m.receiverId === deviceId1)
-          )
           .map(m => ({
             ...m,
             timestamp: new Date(m.timestamp)
@@ -289,6 +338,11 @@ class OfflineStorageService {
       message.status = status;
       await this.saveMessage(message);
     }
+  }
+
+  async messageExists(messageId: string): Promise<boolean> {
+    const message = await this.getMessage(messageId);
+    return message !== null;
   }
 
   // ============ PENDING MESSAGE QUEUE ============
@@ -406,6 +460,25 @@ class OfflineStorageService {
     }
 
     console.log('[OfflineStorage] Cleanup completed');
+  }
+
+  // Clear all data (for debugging)
+  async clearAllData(): Promise<void> {
+    if (!this.db) return;
+
+    const stores = ['devices', 'messages', 'pendingMessages', 'config'];
+    
+    for (const storeName of stores) {
+      await new Promise<void>((resolve, reject) => {
+        const transaction = this.db!.transaction([storeName], 'readwrite');
+        const store = transaction.objectStore(storeName);
+        const request = store.clear();
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    console.log('[OfflineStorage] All data cleared');
   }
 }
 
