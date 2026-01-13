@@ -1,0 +1,17 @@
+<svg width="192" height="192" viewBox="0 0 192 192" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="192" height="192" rx="40" fill="#0a0a0f"/>
+  <circle cx="96" cy="96" r="60" stroke="#8b5cf6" stroke-width="4" fill="none" opacity="0.3"/>
+  <circle cx="96" cy="96" r="40" stroke="#8b5cf6" stroke-width="4" fill="none" opacity="0.5"/>
+  <circle cx="96" cy="96" r="20" stroke="#8b5cf6" stroke-width="4" fill="none" opacity="0.7"/>
+  <circle cx="96" cy="96" r="8" fill="#8b5cf6"/>
+  <!-- Radio waves -->
+  <path d="M60 60 L50 50" stroke="#00ff88" stroke-width="3" stroke-linecap="round"/>
+  <path d="M132 60 L142 50" stroke="#00ff88" stroke-width="3" stroke-linecap="round"/>
+  <path d="M60 132 L50 142" stroke="#00ff88" stroke-width="3" stroke-linecap="round"/>
+  <path d="M132 132 L142 142" stroke="#00ff88" stroke-width="3" stroke-linecap="round"/>
+  <!-- Nodes -->
+  <circle cx="50" cy="50" r="8" fill="#00ff88"/>
+  <circle cx="142" cy="50" r="8" fill="#00ff88"/>
+  <circle cx="50" cy="142" r="8" fill="#00ff88"/>
+  <circle cx="142" cy="142" r="8" fill="#00ff88"/>
+</svg>

@@ -4,6 +4,7 @@
 import { MeshDevice, MeshMessage } from '@/types/mesh';
 import { offlineStorage } from './OfflineStorageService';
 import { MeshPacket, createPacket, decodePacket, encodePacket, verifyPacket } from './MeshProtocol';
+import { detectDeviceInfo } from '@/utils/deviceDetection';
 
 interface LocalMeshEvents {
   onDeviceDiscovered: (device: MeshDevice) => void;
@@ -139,9 +140,15 @@ class LocalMeshService {
   private handlePresence(data: any) {
     const existingDevice = this.discoveredDevices.get(data.from);
     
+    // Use actual device name from the announcing device, not generic names
+    let deviceName = data.name || '';
+    if (!deviceName || deviceName.startsWith('MeshUser-') || deviceName.startsWith('Device-')) {
+      deviceName = `Device-${data.from.slice(0, 4)}`;
+    }
+    
     const device: MeshDevice = {
       id: data.from,
-      name: data.name || `Device-${data.from.slice(0, 4)}`,
+      name: deviceName,
       signalStrength: 95,
       distance: 1,
       angle: existingDevice?.angle || Math.random() * 360,
@@ -149,7 +156,7 @@ class LocalMeshService {
       isOnline: true,
       lastSeen: new Date(),
       type: data.deviceType || 'phone',
-      connectionType: 'webrtc',
+      connectionType: 'wifi',
       bluetoothEnabled: false,
       isSelf: false,
       isTyping: false
@@ -171,6 +178,7 @@ class LocalMeshService {
 
     // Emit event
     if (isNew) {
+      console.log('[LocalMesh] New device discovered:', device.name, device.id);
       this.events.onDeviceDiscovered?.(device);
     } else {
       this.events.onDeviceUpdated?.(device);
@@ -249,11 +257,16 @@ class LocalMeshService {
   private announcePresence() {
     if (!this.broadcastChannel) return;
 
+    // Get device type from detection
+    const deviceInfo = detectDeviceInfo();
+
     this.broadcastChannel.postMessage({
       type: 'PRESENCE',
       from: this.localDeviceId,
       name: this.localDeviceName,
-      deviceType: 'phone',
+      deviceType: deviceInfo.type,
+      deviceBrand: deviceInfo.brand,
+      deviceOS: deviceInfo.os,
       timestamp: Date.now()
     });
   }

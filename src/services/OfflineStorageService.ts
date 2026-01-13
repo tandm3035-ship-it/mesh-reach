@@ -23,10 +23,13 @@ interface PendingMessage {
   lastAttempt: number;
 }
 
-interface DeviceIdentity {
+export interface DeviceIdentity {
   deviceId: string;
   deviceName: string;
   createdAt: number;
+  deviceType?: string;
+  deviceBrand?: string;
+  deviceOS?: string;
 }
 
 class OfflineStorageService {
