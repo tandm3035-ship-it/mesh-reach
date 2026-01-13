@@ -1,5 +1,6 @@
 import { Radio, Github } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Bluetooth, Wifi, WifiOff } from 'lucide-react';
 
 interface HeaderProps {
   isScanning: boolean;
