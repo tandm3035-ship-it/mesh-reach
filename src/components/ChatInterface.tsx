@@ -3,6 +3,7 @@ import { MeshDevice, MeshMessage } from '@/types/mesh';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { EmojiPicker } from '@/components/EmojiPicker';
 import { 
   Send, 
   ArrowLeft, 
@@ -15,7 +16,6 @@ import {
   X,
   Image as ImageIcon,
   Paperclip,
-  Smile,
   Mic
 } from 'lucide-react';
 import { formatDistanceToNow, format, isToday, isYesterday } from 'date-fns';
@@ -282,9 +282,7 @@ export const ChatInterface = ({
       {/* Input */}
       <div className="p-4 border-t border-border bg-card">
         <div className="flex items-center gap-2 max-w-3xl mx-auto">
-          <Button variant="ghost" size="icon" className="text-muted-foreground shrink-0">
-            <Smile className="w-5 h-5" />
-          </Button>
+          <EmojiPicker onEmojiSelect={(emoji) => setMessage(prev => prev + emoji)} />
           <Button variant="ghost" size="icon" className="text-muted-foreground shrink-0">
             <Paperclip className="w-5 h-5" />
           </Button>

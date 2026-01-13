@@ -108,28 +108,55 @@ class UnifiedMeshServiceImpl {
 
   private async loadDeviceIdentity() {
     try {
-      const { value: storedId } = await Preferences.get({ key: 'mesh_device_id' });
-      const { value: storedName } = await Preferences.get({ key: 'mesh_device_name' });
+      // First try IndexedDB (persists across browser sessions)
+      const storedIdentity = await offlineStorage.getDeviceIdentity();
       
-      if (storedId) {
-        this.localDeviceId = storedId;
+      if (storedIdentity && storedIdentity.deviceId) {
+        this.localDeviceId = storedIdentity.deviceId;
+        this.localDeviceName = storedIdentity.deviceName;
+        console.log('[UnifiedMesh] Loaded identity from IndexedDB:', this.localDeviceId);
       } else {
-        this.localDeviceId = generateDeviceId();
-        await Preferences.set({ key: 'mesh_device_id', value: this.localDeviceId });
-      }
-      
-      if (storedName) {
-        this.localDeviceName = storedName;
-      } else {
-        this.localDeviceName = `MeshUser-${this.localDeviceId.slice(0, 4)}`;
-        await Preferences.set({ key: 'mesh_device_name', value: this.localDeviceName });
+        // Try Capacitor Preferences as fallback (for native apps)
+        try {
+          const { value: storedId } = await Preferences.get({ key: 'mesh_device_id' });
+          const { value: storedName } = await Preferences.get({ key: 'mesh_device_name' });
+          
+          if (storedId) {
+            this.localDeviceId = storedId;
+            this.localDeviceName = storedName || `MeshUser-${storedId.slice(0, 4)}`;
+          } else {
+            // Generate new identity
+            this.localDeviceId = generateDeviceId();
+            this.localDeviceName = `MeshUser-${this.localDeviceId.slice(0, 4)}`;
+          }
+        } catch (e) {
+          // Generate new identity if all storage fails
+          this.localDeviceId = generateDeviceId();
+          this.localDeviceName = `MeshUser-${this.localDeviceId.slice(0, 4)}`;
+        }
+        
+        // Persist to IndexedDB for future sessions
+        await offlineStorage.setDeviceIdentity({
+          deviceId: this.localDeviceId,
+          deviceName: this.localDeviceName,
+          createdAt: Date.now()
+        });
+        
+        // Also try to persist to Capacitor Preferences
+        try {
+          await Preferences.set({ key: 'mesh_device_id', value: this.localDeviceId });
+          await Preferences.set({ key: 'mesh_device_name', value: this.localDeviceName });
+        } catch (e) {
+          // Ignore if Preferences not available
+        }
       }
     } catch (e) {
+      console.error('[UnifiedMesh] Error loading identity:', e);
       this.localDeviceId = generateDeviceId();
       this.localDeviceName = `MeshUser-${this.localDeviceId.slice(0, 4)}`;
     }
     
-    console.log('[UnifiedMesh] Device:', this.localDeviceId, this.localDeviceName);
+    console.log('[UnifiedMesh] Device identity:', this.localDeviceId, this.localDeviceName);
   }
 
   private async initializeLocalMesh() {
